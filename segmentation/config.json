@@ -1,0 +1,11 @@
+{
+  "pascal":
+  {
+    "data_path": "~/VOCdevkit/VOC2012/"
+  },
+
+  "sbd":
+  {
+    "data_path": "~/benchmark_RELEASE/"
+  }
+}
