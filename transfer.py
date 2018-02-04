@@ -48,10 +48,10 @@ class StyleTransfer(object):
     def get_style_loss(self, content_masks, style_masks, gen_layer, style_layer, masks_product, masks_norm, T):
         EPS = 1e-8 # constant for numerical stability 
         
-        _, _, H, W = style_layer.shape
+        _, _, H, W = style_layer[0].shape
         newH, newW = H - T + 1, W - T + 1
 
-        p_s = extract_patches(style_layer, newH, newW, T)
+        p_s = torch.cat([extract_patches(layer, newH, newW, T) for layer in style_layer], dim=0)
         norm = ((p_s ** 2).view(p_s.shape[0], -1).sum() + masks_norm) ** 0.5
 
         norm = norm.unsqueeze(0)
@@ -62,8 +62,8 @@ class StyleTransfer(object):
 
         NN = torch.max((feature_product + masks_product) / (norm + EPS), 1)[1]
 
-        s = torch.cat((style_layer, style_masks), dim=1)
-        p_s = extract_patches(s, newH, newW, T)
+        s = [torch.cat([layer, masks], dim=1) for layer, masks in zip(style_layer, style_masks)]
+        p_s = torch.cat([extract_patches(x, newH, newW, T) for x in s], dim=0)
 
         g = torch.cat((gen_layer, content_masks), dim=1)
         p_g = extract_patches(g, newH, newW, T)
@@ -83,7 +83,7 @@ class StyleTransfer(object):
     
         
     def generate(self, gen_img, content, style, content_masks, style_masks, lr, decay, n_iter, sz=None,
-                 T=3, ALPHA_1=5e-3, ALPHA_2=2e-4, ALPHA_3=1e-3, BETA=8):
+                 T=3, ALPHA_1=1e2, ALPHA_2=1e2, ALPHA_3=5e2, BETA=8):
         if sz is None:
             h, w = content.shape[-2:]
         else:
@@ -98,37 +98,32 @@ class StyleTransfer(object):
             gen_var = prepare_img(gen_img, requires_grad=True, resize=(h, w))
 
         cont_var = prepare_img(content, resize=(h, w))
-        style_var = prepare_img(style, resize=(h, w))
+        style_var = [prepare_img(style_img, resize=(h, w)) for style_img in style]
         
-        style2_1, style3_1, style4_1, style5_1 = self.nn.forward(style_var)
+        style2_1, style3_1, style4_1, style5_1 =  [], [], [], []
+        for s2, s3, s4, s5 in map(self.nn.forward, style_var):
+            style2_1.append(s2)
+            style3_1.append(s3)
+            style4_1.append(s4)
+            style5_1.append(s5)
+            
         cont2_1, cont3_1, cont4_1, cont5_1 = self.nn.forward(cont_var)
-        
-        # set model parameters
-        
-        ALPHA_1 = 5e1
-        ALPHA_2 = 2e2
-        ALPHA_3 = 1e2 # 5e-4 #1e-4
-        
-
-        BETA = 8
-
-        T = 3
         
         
         # produce masks for augmented layers
         
         content_masks_0 = extract_layer_masks(content_masks, h, w, BETA)
         
-        h, w = style3_1.shape[2:]
+        h, w = style3_1[0].shape[2:]
 
         content_masks_3_1 = extract_layer_masks(content_masks, h, w, BETA)
-        style_masks_3_1 = extract_layer_masks(style_masks, h, w, BETA)
+        style_masks_3_1 = [extract_layer_masks(msq, h, w, BETA) for msq in style_masks]
+        
         masks_prod_3_1, masks_norm_3_1 = preprocess_masks(content_masks_3_1, style_masks_3_1, h, w, T)
 
-
-        h, w = style4_1.shape[2:]
+        h, w = style4_1[0].shape[2:]
         content_masks_4_1 = extract_layer_masks(content_masks, h, w, BETA)
-        style_masks_4_1 = extract_layer_masks(style_masks, h, w, BETA)
+        style_masks_4_1 = [extract_layer_masks(msq, h, w, BETA) for msq in style_masks]
         masks_prod_4_1, masks_norm_4_1 = preprocess_masks(content_masks_4_1, style_masks_4_1, h, w, T)
 
         # initialize optimizer
@@ -161,7 +156,7 @@ class StyleTransfer(object):
             style_loss_4_1 = self.get_style_loss(content_masks_4_1, style_masks_4_1, gen4_1, style4_1,
                                             masks_prod_4_1, masks_norm_4_1, T)
 
-            content_loss = ((cont3_1 - gen3_1) ** 2).mean() + ((cont4_1 - gen4_1) ** 2).mean()
+            content_loss = ((cont5_1 - gen5_1) ** 2).mean() + ((cont4_1 - gen4_1) ** 2).mean()
 
             background_loss = ((content_masks_0[0, 0] * (cont_var - gen_var)) ** 2).mean()
 
@@ -194,22 +189,58 @@ class ObjectStyleTransfer(object):
         self._style_transfer = StyleTransfer()
 
     
-    def generate(self, content_img, style_img):
+    def generate(self, content_img, style_img, size=None, lr=1e-2,
+                 T=3, ALPHA_1=1e2, ALPHA_2=1e2, ALPHA_3=5e2, BETA=20):
         content = load_img(content_img)
-        style = load_img(style_img)
+        style = [load_img(img) for img in style_img]
         
         content_masks = get_softmask(self._segmentation, content_img)
-        style_masks = get_softmask(self._segmentation, style_img)
+        style_masks = [get_softmask(self._segmentation, img) for img in style_img]
         
+        gen_img = None
+        h, w = (64, 64)
+        
+        if size is None:
+            c_h, c_w = content.shape[-2:]
+        else:
+            c_h, c_w = size
+            
+        while h < c_h and w < c_w: 
+            print((h, w))
+            gen_img = self._style_transfer.generate(
+                gen_img=None,
+                content=content,
+                style=style,
+                content_masks=content_masks,
+                style_masks=style_masks,
+                lr=lr,
+                decay=0.8,
+                n_iter=201,
+                sz=(h, w),
+                T=T, 
+                ALPHA_1=ALPHA_1, 
+                ALPHA_2=ALPHA_2, 
+                ALPHA_3=ALPHA_3, 
+                BETA=BETA
+            )
+            h *= 2
+            w *= 2
+        
+        print(c_h, c_w)
         gen_img = self._style_transfer.generate(
             gen_img=None,
             content=content,
             style=style,
             content_masks=content_masks,
             style_masks=style_masks,
-            lr=1e-2,
+            lr=lr,
             decay=0.8,
             n_iter=201,
-            sz=(128, 128)
+            sz=(c_h, c_w),
+            T=T, 
+            ALPHA_1=ALPHA_1, 
+            ALPHA_2=ALPHA_2, 
+            ALPHA_3=ALPHA_3, 
+            BETA=BETA
         )
         return to_img(gen_img)

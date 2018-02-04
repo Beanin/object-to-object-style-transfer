@@ -30,7 +30,7 @@ def extract_patches(x, newH, newW, T):
 def preprocess_masks(content_masks, style_masks, H, W, T):
     newH, newW = H - T + 1, W - T + 1
     
-    style_patches = extract_patches(style_masks, newH, newW, T)
+    style_patches = torch.cat([extract_patches(mask, newH, newW, T) for mask in style_masks], dim=0)
     
     norm = (style_patches ** 2).view(style_patches.shape[0], -1).sum(1)
 
