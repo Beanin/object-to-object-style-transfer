@@ -32,7 +32,7 @@ def get_softmask(model, img_path):
     img = img[:, :, ::-1]
     img = img.astype(np.float64)
     img -= [104.00699, 116.66877, 122.67892]
-    #img = misc.imresize(img, (512, 512))
+    img = misc.imresize(img, (512, 512))
     img = img.astype(float) / 255.0
     # NHWC -> NCWH
     img = img.transpose(2, 0, 1) 
